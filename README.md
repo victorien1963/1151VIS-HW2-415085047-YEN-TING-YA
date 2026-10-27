@@ -6,6 +6,7 @@
 
 - [互動網站](https://victorien1963.github.io/1151VIS-HW2-415085047-YEN-TING-YA/)
 - [GitHub 原始碼](https://github.com/victorien1963/1151VIS-HW2-415085047-YEN-TING-YA)
+- [HW2 繳交文件與操作說明](HW2-report.md) · [Word](HW2-415085047-YEN-TING-YA.docx) · [PDF](HW2-415085047-YEN-TING-YA.pdf)
 - YouTube 互動影片：待錄製與補上連結。
 
 ![專案截圖](preview.png)
