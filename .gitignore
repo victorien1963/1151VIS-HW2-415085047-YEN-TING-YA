@@ -1,0 +1,7 @@
+# Static HTML project
+.DS_Store
+Thumbs.db
+node_modules/
+*.log
+.env
+.env.*
