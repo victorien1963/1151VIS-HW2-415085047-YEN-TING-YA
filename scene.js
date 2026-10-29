@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {OrbitControls} from './vendor/OrbitControls.js';
 import {carPoseAt,worldTransform} from './model.js';
+import {pitAt,pitOffsetFactor,buildPitLaneSamples} from './pits.js';
 
 export function createScene(data,onSelect,onManualCamera,onFollowChange){
   const container=document.querySelector('#scene'),host=document.querySelector('#canvas-host');
@@ -21,10 +22,10 @@ export function createScene(data,onSelect,onManualCamera,onFollowChange){
   const points=data.track_samples.map(s=>new THREE.Vector3(...transform(s)).setY(0));
   // One race lap defines the road; all cars share the race UTC clock.
   points.pop();const curve=new THREE.CatmullRomCurve3(points,true,'centripetal');
-  function ribbon(inner,outer,y,colour,striped=false){
-    const positions=[],colours=[],count=1000,a=new THREE.Color(colour),b=new THREE.Color(0xd4dedc);
+  function ribbon(inner,outer,y,colour,striped=false,path=curve,count=1000){
+    const positions=[],colours=[],a=new THREE.Color(colour),b=new THREE.Color(0xd4dedc);
     for(let i=0;i<count;i++){
-      const p=curve.getPointAt(i/count),q=curve.getPointAt((i+1)/count),ta=curve.getTangentAt(i/count),tb=curve.getTangentAt((i+1)/count);
+      const p=path.getPointAt(i/count),q=path.getPointAt((i+1)/count),ta=path.getTangentAt(i/count),tb=path.getTangentAt((i+1)/count);
       const A=[p.x+ta.z*inner,y,p.z-ta.x*inner],B=[p.x+ta.z*outer,y,p.z-ta.x*outer],C=[q.x+tb.z*inner,y,q.z-tb.x*inner],D=[q.x+tb.z*outer,y,q.z-tb.x*outer];
       positions.push(...A,...C,...B,...B,...C,...D);const c=striped&&Math.floor(i/4)%2?b:a;for(let j=0;j<6;j++)colours.push(c.r,c.g,c.b);
     }
@@ -37,6 +38,22 @@ export function createScene(data,onSelect,onManualCamera,onFollowChange){
   function textSprite(text,colour='#788d9c',width=35){
     const canvas=document.createElement('canvas');canvas.width=768;canvas.height=128;const ctx=canvas.getContext('2d');ctx.font='500 46px monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle=colour;ctx.fillText(text,384,64);
     const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(canvas),transparent:true,depthWrite:false}));sprite.scale.set(width,width/6,1);return sprite;
+  }
+  const pitSamples=buildPitLaneSamples(data);
+  if(pitSamples.length){
+    const pitPoints=pitSamples.map(s=>new THREE.Vector3(...transform(s)).setY(0));
+    const pitCurve=new THREE.CatmullRomCurve3(pitPoints,false,'centripetal');
+    // The enlarged road/car scale makes the true pit lane lie within the road
+    // ribbon. Highlight its sampled alignment instead of inventing a new path.
+    ribbon(-1.65,1.65,.11,0x635640,false,pitCurve,220);
+    ribbon(-1.72,-1.60,.14,0xe4bd76,true,pitCurve,220);
+    ribbon(1.60,1.72,.14,0xe4bd76,true,pitCurve,220);
+    const pitLabel=textSprite('PIT LANE','#efc78a',31);
+    pitLabel.position.copy(pitCurve.getPointAt(.5)).add(new THREE.Vector3(0,4,11));scene.add(pitLabel);
+    const pitGuide=new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+      pitCurve.getPointAt(.5).clone().setY(.3),pitLabel.position.clone().add(new THREE.Vector3(0,-1,-1))
+    ]),new THREE.LineBasicMaterial({color:0xb59968,transparent:true,opacity:.6}));scene.add(pitGuide);
+    container.dataset.pitLane='sampled-trajectory';
   }
   const start=carPoseAt(data.track_samples,0,transform),finish=new THREE.Group();finish.position.set(...start.position);finish.position.y=.09;finish.rotation.y=start.heading;
   for(let x=0;x<12;x++)for(let z=0;z<2;z++){const square=new THREE.Mesh(new THREE.PlaneGeometry(.84,.8),new THREE.MeshBasicMaterial({color:(x+z)%2?0xdde5e7:0x0d141b,side:THREE.DoubleSide}));square.rotation.x=-Math.PI/2;square.position.set((x-5.5)*.84,0,(z-.5)*.8);finish.add(square)}scene.add(finish);
@@ -64,11 +81,12 @@ export function createScene(data,onSelect,onManualCamera,onFollowChange){
   }
   data.drivers.forEach((driver,index)=>{
     const {group,ring}=buildCar(driver),offset=(index-(data.drivers.length-1)/2)*2.85;
-    const label=document.createElement('button');label.className='car-label';label.dataset.driver=driver.driver_number;label.style.setProperty('--driver','#'+driver.display_colour);label.innerHTML=`<b>${driver.name_acronym}</b><span class="label-speed"></span><small>km/h</small>`;label.setAttribute('aria-label',`選取 ${driver.full_name}`);label.setAttribute('aria-pressed','false');label.addEventListener('click',()=>onSelect(driver.driver_number));document.querySelector('#car-labels').append(label);
+    const label=document.createElement('button');label.className='car-label';label.dataset.driver=driver.driver_number;label.style.setProperty('--driver','#'+driver.display_colour);label.innerHTML=`<b>${driver.name_acronym}</b><span class="label-speed"></span><small>km/h</small><strong class="label-pit" hidden>進站中</strong>`;label.setAttribute('aria-label',`選取 ${driver.full_name}`);label.setAttribute('aria-pressed','false');label.addEventListener('click',()=>onSelect(driver.driver_number));document.querySelector('#car-labels').append(label);
     const connector=document.createElementNS('http://www.w3.org/2000/svg','line');connector.setAttribute('stroke','#'+driver.display_colour);document.querySelector('#label-lines').append(connector);
     objects.set(driver.driver_number,{driver,group,ring,offset,label,connector});
   });
   let selected=data.drivers[0].driver_number,width=1,height=1,pointerStart=null,pointerPan=false,pointerDragged=false,following=false,currentTime=0;
+  const poseFor=(o,t)=>carPoseAt(o.driver.samples,t,transform,o.offset*pitOffsetFactor(o.driver,t));
   const raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2();
   renderer.domElement.addEventListener('pointerdown',e=>{
     pointerStart=[e.clientX,e.clientY];pointerDragged=false;
@@ -88,7 +106,7 @@ export function createScene(data,onSelect,onManualCamera,onFollowChange){
     // The follow loop already centers the car every frame. Do not flush pending
     // OrbitControls damping or apply a second camera transform while following.
     if(following)return;
-    settleControls();const o=objects.get(selected),pose=carPoseAt(o.driver.samples,t,transform,o.offset),offset=camera.position.clone().sub(controls.target);
+    settleControls();const o=objects.get(selected),pose=poseFor(o,t),offset=camera.position.clone().sub(controls.target);
     controls.target.set(pose.position[0],2,pose.position[2]);camera.position.copy(controls.target).add(offset);controls.update();container.dataset.camera='focused';
   }
   function setFollowing(value,t=currentTime){if(value&&!following)focusSelected(t);following=value;controls.zoomToCursor=!value;container.dataset.following=String(value);onFollowChange?.(value)}
@@ -114,20 +132,21 @@ export function createScene(data,onSelect,onManualCamera,onFollowChange){
   function update(t,delta,phase){
     currentTime=t;controls.update(delta);
     if(following){
-      const o=objects.get(selected),pose=carPoseAt(o.driver.samples,t,transform,o.offset),target=new THREE.Vector3(pose.position[0],2,pose.position[2]);
+      const o=objects.get(selected),pose=poseFor(o,t),target=new THREE.Vector3(pose.position[0],2,pose.position[2]);
       camera.position.add(target.clone().sub(controls.target));controls.target.copy(target);camera.updateMatrixWorld();recordCamera();container.dataset.camera='following';
     }
     const labels=[];
     for(const o of objects.values()){
-      const pose=carPoseAt(o.driver.samples,t,transform,o.offset);o.group.position.set(...pose.position);o.group.rotation.y=pose.heading;const finished=t>=o.driver.finish_t;o.label.querySelector('.label-speed').textContent=finished?'FIN':Math.round(pose.sample.speed);o.label.querySelector('small').hidden=finished;
+      const pose=poseFor(o,t),pit=pitAt(o.driver,t);o.group.position.set(...pose.position);o.group.rotation.y=pose.heading;const finished=t>=o.driver.finish_t;o.label.querySelector('.label-speed').textContent=finished?'FIN':Math.round(pose.sample.speed);o.label.querySelector('small').hidden=finished;
+      o.label.querySelector('.label-pit').hidden=!pit;o.label.dataset.pitting=String(Boolean(pit));
       o.label.dataset.position=pose.position.map(v=>v.toFixed(2)).join(',');o.label.dataset.heading=pose.heading.toFixed(3);
       const p=o.group.position.clone().setY(2).project(camera),screenX=(p.x*.5+.5)*width,screenY=(-p.y*.5+.5)*height;
       o.label.dataset.screenX=screenX.toFixed(1);o.label.dataset.screenY=screenY.toFixed(1);
       const visible=p.z<1&&p.z>-1&&screenX>-25&&screenX<width+25&&screenY>0&&screenY<height;o.label.hidden=!visible;o.connector.style.display=visible?'':'none';
-      if(visible)labels.push({o,x:screenX,y:screenY,lx:Math.min(width-112,Math.max(8,screenX+22)),ly:Math.min(height-70,Math.max(45,screenY-18))});
+      if(visible){const lw=o.label.offsetWidth;labels.push({o,x:screenX,y:screenY,lw,lx:Math.max(8,Math.min(width-lw-8,screenX+22)),ly:Math.min(height-70,Math.max(45,screenY-18))})}
     }
     labels.sort((a,b)=>a.ly-b.ly);
-    for(let i=0;i<labels.length;i++)for(let j=0;j<i;j++)if(Math.abs(labels[i].lx-labels[j].lx)<112&&labels[i].ly-labels[j].ly<32)labels[i].ly=labels[j].ly+32;
+    for(let i=0;i<labels.length;i++)for(let j=0;j<i;j++)if(labels[i].lx<labels[j].lx+labels[j].lw&&labels[j].lx<labels[i].lx+labels[i].lw&&labels[i].ly-labels[j].ly<32)labels[i].ly=labels[j].ly+32;
     const overflow=Math.max(0,...labels.map(l=>l.ly+28-(height-42)));if(overflow)labels.forEach(l=>l.ly-=overflow);
     for(const l of labels){l.o.label.style.transform=`translate(${l.lx}px,${l.ly}px)`;l.o.connector.setAttribute('x1',l.x);l.o.connector.setAttribute('y1',l.y);l.o.connector.setAttribute('x2',l.lx);l.o.connector.setAttribute('y2',l.ly+13)}
     renderer.render(scene,camera);

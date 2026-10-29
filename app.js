@@ -1,8 +1,11 @@
-import {createScene} from './scene.js?v=chart-controls-6';
+import {createScene} from './scene.js?v=gap-explorer-1';
 import {sampleAt,formatLap,formatClock,recordAt,rankDrivers,speedWindow,zoomSpeedWindow} from './model.js?v=chart-zoom-1';
+import {createGapChart} from './gap-chart.js';
+import {lapTimeRange} from './gap-model.js';
+import {pitAt} from './pits.js';
 const d3=window.d3;
-const state={t:0,playing:false,rate:1,loop:true,selected:81,autoRotate:false,following:false,phase:'ready',countdown:3};
-let data,scene,drivers,maxTime,chartX,chartY,cursor,cursorDots,positionX,positionCursor,lastFrame=0,lastUI=0,chartWidth=0,windowStart=-1;
+const state={t:0,playing:false,rate:1,loop:true,selected:81,autoRotate:false,following:false,phase:'ready',countdown:3,replayRange:null};
+let data,scene,drivers,maxTime,chartX,chartY,cursor,cursorDots,gapChart,lastFrame=0,lastUI=0,chartWidth=0,windowStart=-1;
 const $=s=>document.querySelector(s),formatNumber=d3.format(',');
 const speedView={duration:120,manualStart:null,visible:new Set([16,81,4])};
 const visibleDrivers=()=>drivers.filter(d=>speedView.visible.has(d.driver_number));
@@ -15,17 +18,19 @@ function renderCameraHints(){
   $('#focus-driver').hidden=state.following;
   const pan=$('#drag-pan').getAttribute('aria-pressed')==='true';
   $('#drag-hint').textContent=state.following?(pan?'跟隨中 · 滾輪縮放 · 拖曳平移解除跟隨':'跟隨中 · 拖曳旋轉 · 滾輪縮放'):(pan?'拖曳：上下左右平移 · 滾輪縮放':'拖曳：旋轉視角 · 滾輪縮放');
-  const lap=beforeStart()?0:recordAt(data.race_laps,state.t)?.lap_number??1;
-  $('.scene-mode').textContent=(state.following?'FOLLOWING '+selected().name_acronym:'RACE')+' · LAP '+String(lap).padStart(2,'0')+' / 53';
+  const lap=beforeStart()?0:state.following?lapFor(selected()):recordAt(data.race_laps,state.t)?.lap_number??1;
+  $('.scene-mode').textContent=(state.following?'FOLLOWING '+selected().name_acronym:'RACE')+(state.following?' · LAP ':' · 領先圈次 ')+String(lap).padStart(2,'0')+' / 53';
   $('.camera-help').textContent=state.following?'鏡頭跟隨車手 · 保留倍率與角度':'放大後，拖曳即可移動畫面';
 }
 function syncFollowing(value){state.following=value;$('#follow-driver').setAttribute('aria-pressed',String(value));renderCameraHints()}
 function setPlaying(value){
+  if(value&&state.replayRange&&(state.t<state.replayRange.start||state.t>=state.replayRange.end)){state.t=state.replayRange.start;state.phase=state.t===0?'ready':'racing'}
   if(value&&state.phase==='ready'){state.phase='countdown';state.countdown=3}
   state.playing=value;$('#play').setAttribute('aria-label',value?'暫停':'播放');$('#play .play-icon').textContent=value?'Ⅱ':'▶';$('#play .play-text').textContent=value?'暫停':'播放';document.documentElement.dataset.playing=String(value);
 }
-function resetRace(){state.t=0;state.phase='ready';state.countdown=3;setPlaying(false);renderMetrics();updateChartCursor();notify('比賽已重置，按播放倒數三秒後起跑')}
-function seek(value){
+function resetRace(){clearReplayRange();state.t=0;state.phase='ready';state.countdown=3;setPlaying(false);renderMetrics();updateChartCursor();notify('比賽已重置，按播放倒數三秒後起跑')}
+function seek(value,preserveRange=false){
+  if(!preserveRange)clearReplayRange();
   state.t=Math.max(0,Math.min(maxTime,+value));state.phase=state.t===0?'ready':state.t>=maxTime?'finished':'racing';state.countdown=3;
   if(state.t===0&&state.playing)setPlaying(true);if(state.t>=maxTime)setPlaying(false);
   renderMetrics();updateChartCursor();
@@ -49,7 +54,8 @@ function gapFor(d){
 function renderMetrics(){
   if(!drivers)return;const d=selected(),s=sampleAt(d.samples,state.t),ready=beforeStart(),done=state.t>=d.finish_t;
   $('#current-speed').textContent=done?'—':Math.round(s.speed);$('#throttle-value').textContent=(done?'—':Math.round(Math.max(0,Math.min(100,s.throttle)))+'%');$('#throttle-meter').style.width=(done?0:Math.max(0,Math.min(100,s.throttle)))+'%';$('#brake-value').textContent=done?'—':s.brake?'ON':'OFF';$('#brake-meter').style.width=!done&&s.brake?'100%':'0%';$('#gear-value').textContent=done?'—':s.gear===0?'N':s.gear;$('#rpm-value').textContent=done?'—':formatNumber(Math.round(s.rpm));$('#drs-value').textContent=done?'—':[10,12,14].includes(s.drs)?'開啟':'關閉';$('#drs-value').style.color=!done&&[10,12,14].includes(s.drs)?'#65cbb0':'#8e9fb5';
-  $('#lap-state').textContent=done?'已完賽 · 終點停駐':state.phase==='ready'?'等待起跑':state.phase==='countdown'?'起跑倒數':state.playing?'正賽播放中':'已暫停';
+  const pit=ready?null:pitAt(d,state.t);const pitStatus=$('#pit-status');pitStatus.hidden=!pit;if(pit)pitStatus.textContent=`PIT · 第 ${pit.stop_index} 次進站中 · 通行約 ${pit.lane_duration.toFixed(1)} 秒`;
+  $('#lap-state').textContent=pit?'進站中':done?'已完賽 · 終點停駐':state.phase==='ready'?'等待起跑':state.phase==='countdown'?'起跑倒數':state.playing?'正賽播放中':'已暫停';
   $('#lap-number').textContent=ready?'起跑前':`當前圈 ${lapFor(d)} / 53`;
   $('#lap-time').textContent='P'+recordAt(d.positions,state.t).position;$('#lap-gap').textContent=gapFor(d);$('#lap-gap').title='距領先車手的最新已知差距';
   $('#elapsed').textContent=formatClock(state.t);$('#timeline').value=state.t;$('#timeline').style.setProperty('--progress',(state.t/maxTime*100)+'%');
@@ -57,7 +63,7 @@ function renderMetrics(){
   document.documentElement.dataset.elapsed=state.t.toFixed(3);document.documentElement.dataset.phase=state.phase;
   const latest=recordAt(data.events,state.t);$('#event-kind').textContent=ready?'STARTING GRID':latest?eventKind(latest):'RACE START';$('#event-reading').textContent=ready?'等待發車 · 三台車位於起跑位置':latest?`${formatClock(latest.t)} · LAP ${latest.lap_number} · ${latest.label}`:'正賽起跑';
   const raceLap=ready?1:recordAt(data.race_laps,state.t)?.lap_number??1;if(document.activeElement!==$('#lap-jump'))$('#lap-jump').value=String(raceLap);
-  renderRanking();renderCameraHints();
+  renderRanking();renderCameraHints();renderReplayRange();
 }
 function buildDriverList(){
   const buttons=d3.select('#driver-list').selectAll('button').data(drivers,d=>d.driver_number).join('button').attr('class','driver-row').attr('data-driver',d=>d.driver_number).style('--driver',d=>'#'+d.display_colour).on('click',(_,d)=>selectDriver(d.driver_number));
@@ -68,7 +74,8 @@ function renderRanking(){
   const rows=d3.select('#driver-list').selectAll('button').data(ranking.map(r=>r.driver),d=>d.driver_number).order();
   rows.attr('data-rank',d=>byNumber.get(d.driver_number).rank).attr('data-lap',d=>lapFor(d)).attr('aria-label',d=>`當時全場第 ${byNumber.get(d.driver_number).rank} 名，查看 ${d.full_name} 資料`);
   rows.select('.number').text(d=>'P'+byNumber.get(d.driver_number).rank);rows.select('.time').text(gapFor);
-  rows.select('.driver-lap').text(d=>beforeStart()?'起跑前 · 0 / 53 圈':state.t>=d.finish_t?'已完賽 · 53 / 53 圈':`當前圈 ${lapFor(d)} / 53`);
+  rows.attr('data-pitting',d=>String(!beforeStart()&&!!pitAt(d,state.t)));
+  rows.select('.driver-lap').text(d=>!beforeStart()&&pitAt(d,state.t)?`進站中 · 第 ${lapFor(d)} 圈`:beforeStart()?'起跑前 · 0 / 53 圈':state.t>=d.finish_t?'已完賽 · 53 / 53 圈':`當前圈 ${lapFor(d)} / 53`);
 }
 function currentSpeedWindow(){return speedWindow(state.t,maxTime,speedView.duration,speedView.manualStart)}
 function browseSpeedWindow(start){
@@ -142,19 +149,28 @@ function buildSpeedChart(){
     const tip=$('#chart-tooltip');tip.hidden=false;tip.textContent=formatClock(t)+'\n'+visible.map(d=>`${d.name_acronym} · ${Math.round(sampleAt(d.samples,t).speed)} km/h`).join('\n');tip.style.left=Math.max(0,Math.min(e.clientX-panel.left+12,panel.width-265))+'px';tip.style.top=Math.max(40,e.clientY-panel.top-34)+'px';
   }).on('pointerleave',()=>{$('#chart-tooltip').hidden=true});
 }
-function buildPositionChart(){
-  const chart=d3.select('#position-chart'),width=330;chart.selectAll('*').remove();
-  positionX=d3.scaleLinear().domain([0,maxTime]).range([32,width-14]);const y=d3.scaleLinear().domain([1,d3.max(drivers.flatMap(d=>d.positions),r=>r.position)]).range([22,188]);
-  chart.append('g').attr('class','chart-grid').attr('transform','translate(32,0)').call(d3.axisLeft(y).tickValues([1,3,5,7,9]).tickSize(-(width-46)).tickFormat(''));
-  chart.append('g').attr('class','axis').attr('transform','translate(32,0)').call(d3.axisLeft(y).tickValues([1,3,5,7,9]).tickFormat(d=>'P'+d).tickSize(0).tickPadding(6));
-  chart.append('g').attr('class','axis').attr('transform','translate(0,188)').call(d3.axisBottom(positionX).tickValues([0,900,1800,2700,3600,4487]).tickFormat(d=>Math.round(d/60)).tickSize(0).tickPadding(12));chart.append('text').attr('class','axis-title').attr('x',300).attr('y',225).text('min');
-  const line=d3.line().curve(d3.curveStepAfter).x(d=>positionX(d.t)).y(d=>y(d.position));
-  chart.selectAll('.position-path').data(drivers).join('path').attr('class','position-path').attr('stroke',d=>'#'+d.display_colour).attr('d',d=>line([...d.positions,{t:maxTime,position:d.positions.at(-1).position}]));
-  positionCursor=chart.append('line').attr('class','chart-cursor').attr('y1',15).attr('y2',188);
-  chart.append('rect').attr('class','chart-overlay').attr('x',32).attr('y',15).attr('width',width-46).attr('height',173).on('click',e=>{setPlaying(false);seek(positionX.invert(d3.pointer(e,chart.node())[0]))}).on('pointermove',e=>{const t=positionX.invert(d3.pointer(e,chart.node())[0]);$('#position-reading').textContent=formatClock(t)+' · '+rankDrivers(drivers,t).map(r=>r.driver.name_acronym+' P'+r.rank).join(' / ')}).on('pointerleave',()=>{$('#position-reading').textContent='點圖跳轉 · 名次亦受進站影響'});
-  $('#position-legend').innerHTML=drivers.map(d=>`<span style="color:#${d.display_colour}">${d.name_acronym}</span>`).join(' ');
+function updateChartCursor(){buildSpeedChart();if(!cursor)return;const [start,end]=chartX.domain(),inView=state.t>=start&&state.t<=end;cursor.style('display',inView?null:'none');cursorDots.style('display',inView?null:'none');cursor.attr('x1',chartX(state.t)).attr('x2',chartX(state.t));cursorDots.attr('cx',chartX(state.t)).attr('cy',d=>chartY(sampleAt(d.samples,state.t).speed)).attr('r',d=>d.driver_number===state.selected?4.3:2.7);gapChart?.update(state.t,state.selected);}
+function clearReplayRange(){state.replayRange=null;gapChart?.clearSelection();renderReplayRange()}
+function renderReplayRange(){
+  const r=state.replayRange;$('#replay-range').disabled=!r;$('#clear-replay').hidden=!r;$('#replay-status').hidden=!r;
+  if(!r){$('#replay-title').textContent='選一個轉折，看看當時發生什麼';$('#replay-detail').textContent='點圖定位，或拖曳框選想回放的圈次。';return}
+  $('#replay-title').textContent=r.label;
+  $('#replay-detail').textContent=`${formatClock(r.start)} – ${formatClock(r.end)} · ${r.detail}`;
+  $('#replay-status').textContent=`區段回放 · ${r.label} · ${state.t>=r.end?'已播放完畢':state.playing?'播放中':'已定位，按播放開始'} · 結束時自動暫停`;
+  $('#replay-range').textContent=state.t>=r.end?'↺ 再看這段':'▶ 播放這段';
 }
-function updateChartCursor(){buildSpeedChart();if(!cursor)return;const [start,end]=chartX.domain(),inView=state.t>=start&&state.t<=end;cursor.style('display',inView?null:'none');cursorDots.style('display',inView?null:'none');cursor.attr('x1',chartX(state.t)).attr('x2',chartX(state.t));cursorDots.attr('cx',chartX(state.t)).attr('cy',d=>chartY(sampleAt(d.samples,state.t).speed)).attr('r',d=>d.driver_number===state.selected?4.3:2.7);positionCursor?.attr('x1',positionX(state.t)).attr('x2',positionX(state.t));}
+function chooseReplay(start,end,label,detail){
+  setPlaying(false);state.replayRange={start:Math.max(0,start),end:Math.min(maxTime,end),label,detail};
+  speedView.manualStart=null;chartWidth=0;seek(state.replayRange.start,true);notify(label+'，按播放這段開始回放');
+}
+function buildGapExplorer(){
+  function chooseLaps(a,b){const range=lapTimeRange(drivers,a,b);if(!range)return;chooseReplay(...range,a===b?`第 ${a} 圈回放`:`第 ${a}–${b} 圈回放`,'包含三位車手通過終點；結束時暫停')}
+  gapChart=createGapChart({drivers,onSelectLap:lap=>chooseLaps(lap,lap),onSelectRange:chooseLaps,onPitSelect:(driver,pit)=>{
+    selectDriver(driver.driver_number);chooseReplay(pit.entry_t-8,pit.exit_t+8,`${driver.name_acronym} · 第 ${pit.lap_number} 圈進站`,`至第 ${pit.lap_number+1} 圈出站 · 通行約 ${pit.lane_duration.toFixed(1)} 秒，含行駛與停車`);
+  }});
+  $('#replay-range').addEventListener('click',()=>{if(!state.replayRange)return;seek(state.replayRange.start,true);setPlaying(true);$('#scene').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'})});
+  $('#clear-replay').addEventListener('click',clearReplayRange);
+}
 function bindRaceControls(){
   d3.select('#lap-jump').selectAll('option').data(data.race_laps).join('option').attr('value',d=>d.lap_number).text(d=>'LAP '+String(d.lap_number).padStart(2,'0'));
   $('#lap-jump').addEventListener('change',e=>seek(data.race_laps.find(r=>r.lap_number===+e.target.value).t));
@@ -163,7 +179,7 @@ function bindRaceControls(){
   $('#opening-battle').addEventListener('click',()=>{selectDriver(81);seek(data.events.find(e=>e.kind==='overtake'&&e.driver_number===81).t-10);setPlaying(true);scene.setFollowing(true,state.t);notify('播放首圈超車前十秒，鏡頭跟隨 Piastri')});
 }
 function bindControls(){
-  $('#play').addEventListener('click',()=>{if(state.t>=maxTime)resetRace();setPlaying(!state.playing);renderMetrics()});
+  $('#play').addEventListener('click',()=>{if(!state.replayRange&&state.t>=maxTime)resetRace();setPlaying(!state.playing);renderMetrics()});
   $('#restart').addEventListener('click',resetRace);
   $('#timeline').max=maxTime;$('#timeline').addEventListener('input',e=>{seek(e.target.value)});
   $('#rate').addEventListener('change',e=>{state.rate=+e.target.value});
@@ -186,14 +202,14 @@ function frame(now){
   const delta=lastFrame?Math.min((now-lastFrame)/1000,.1):0;lastFrame=now;
   if(state.playing&&!document.hidden){
     if(state.phase==='countdown'){state.countdown=Math.max(0,state.countdown-delta);if(state.countdown===0){state.phase='racing';notify('起跑')}}
-    else{state.t+=delta*state.rate;if(state.t>=maxTime){if(state.loop){state.t=0;state.phase='countdown';state.countdown=3}else{state.t=maxTime;state.phase='finished';setPlaying(false)}}}
+    else{state.t+=delta*state.rate;if(state.replayRange&&state.t>=state.replayRange.end){state.t=state.replayRange.end;state.phase=state.t>=maxTime?'finished':'racing';setPlaying(false);notify('已播放完選取區段')}else if(state.t>=maxTime){if(state.loop){state.t=0;state.phase='countdown';state.countdown=3}else{state.t=maxTime;state.phase='finished';setPlaying(false)}}}
   }
   scene.update(state.t,delta,state.phase);if(now-lastUI>40){renderMetrics();updateChartCursor();lastUI=now}requestAnimationFrame(frame);
 }
 async function init(){try{
   data=await d3.json('data/race.json');drivers=data.drivers.map(d=>({...d,display_colour:({16:'FF6678',4:'FF9B42',81:'AFA2FF'})[d.driver_number]||d.team_colour}));data.drivers=drivers;maxTime=data.duration;
   $('#session-best').textContent=formatClock(drivers[0].result.duration);$('#session-best-driver').textContent=drivers[0].full_name;$('#session-max').innerHTML=Math.round(d3.max(drivers.flatMap(d=>d.samples),s=>s.speed))+'<em>km/h</em>';$('#total-time').textContent=formatClock(maxTime);
-  buildDriverList();bindSpeedControls();buildSpeedChart();buildPositionChart();new ResizeObserver(()=>{chartWidth=0;buildSpeedChart()}).observe($('#speed-chart'));
+  buildDriverList();bindSpeedControls();buildSpeedChart();buildGapExplorer();new ResizeObserver(()=>{chartWidth=0;buildSpeedChart()}).observe($('#speed-chart'));
   scene=createScene(data,selectDriver,()=>{state.autoRotate=false;$('#auto-rotate').setAttribute('aria-pressed','false')},syncFollowing);bindControls();bindRaceControls();selectDriver(state.selected);seek(0);setPlaying(false);scene.setFollowing(true,0);document.querySelectorAll('#view-perspective,#view-top').forEach(b=>b.setAttribute('aria-pressed','false'));$('#loading').remove();document.documentElement.dataset.ready='true';requestAnimationFrame(frame);
 }catch(error){console.error(error);$('#loading').textContent='3D 圖表無法載入。請使用支援 WebGL 的瀏覽器重新整理；資料來源與啟動方式見專案 README。';document.documentElement.dataset.error=error.message;}}
 init();
