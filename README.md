@@ -7,7 +7,7 @@
 - [互動網站](https://victorien1963.github.io/1151VIS-HW2-415085047-YEN-TING-YA/)
 - [GitHub 原始碼](https://github.com/victorien1963/1151VIS-HW2-415085047-YEN-TING-YA)
 - [HW2 繳交文件與操作說明](HW2-report.md) · [Word](HW2-415085047-YEN-TING-YA.docx) · [PDF](HW2-415085047-YEN-TING-YA.pdf)
-- YouTube 互動影片：待錄製與補上連結。
+- [YouTube 互動影片（音量調整版）](https://youtu.be/sObMDqkssig)
 
 ![進站前後的車手差距變化](hw2-gap.jpg)
 
@@ -100,7 +100,7 @@ Monza 起跑線與終點計時線分開標示，起跑線位於計時線下游�
 
 依 [HW2 作業說明](https://elearn2.fju.edu.tw/course/403380/learning-activity#/3155578)：公開儲存庫命名為 `1151VIS-HW2-學號-姓名`，並提供專案截圖、GitHub 連結、YouTube 影片、製作流程及操作說明，文件內容同步至 Markdown。
 
-- 待錄製互動影片並上傳個人 YouTube，補上連結。
+- 已錄製互動影片並上傳個人 YouTube，影片連結已同步至繳交文件與 Markdown。
 - 待依教師要求共享給 cchu.fju@gmail.com。
 - 待繳交正式文件；網站部署不等於已完成課程繳交。
 
