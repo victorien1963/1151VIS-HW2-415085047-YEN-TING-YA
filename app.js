@@ -8,6 +8,7 @@ const state={t:0,playing:false,rate:1,loop:true,selected:81,autoRotate:false,fol
 let data,scene,drivers,maxTime,chartX,chartY,cursor,cursorDots,gapChart,lastFrame=0,lastUI=0,chartWidth=0,windowStart=-1;
 const $=s=>document.querySelector(s),formatNumber=d3.format(',');
 const speedView={duration:120,manualStart:null,visible:new Set([16,81,4])};
+let syncedSpeedDuration;
 const visibleDrivers=()=>drivers.filter(d=>speedView.visible.has(d.driver_number));
 const selected=()=>drivers.find(d=>d.driver_number===state.selected);
 const beforeStart=()=>['ready','countdown'].includes(state.phase);
@@ -121,10 +122,15 @@ function bindSpeedControls(){
 function buildSpeedChart(){
   const chart=d3.select('#speed-chart'),width=Math.max(300,Math.round(chart.node().clientWidth)),[start,end]=currentSpeedWindow();
   const following=speedView.manualStart===null,seconds=end-start;
-  const custom=$('#speed-window-custom'),preset=speedView.duration==='all'?'all':[30,60,120,300,600].find(n=>Math.abs(n-seconds)<1e-7);
-  custom.hidden=preset!==undefined;custom.textContent='自訂 · '+seconds.toFixed(1)+' 秒';
-  $('#speed-window').value=preset!==undefined?String(preset):'custom';
-  $('#speed-duration').textContent=seconds.toFixed(1)+' 秒';
+  // Leave the native menu untouched during animation, including while it is open.
+  // Only a preset change or wheel zoom needs to synchronize its options/value.
+  if(syncedSpeedDuration!==speedView.duration){
+    const custom=$('#speed-window-custom'),preset=speedView.duration==='all'?'all':[30,60,120,300,600].find(n=>Math.abs(n-seconds)<1e-7);
+    custom.hidden=preset!==undefined;custom.textContent='自訂 · '+seconds.toFixed(1)+' 秒';
+    $('#speed-window').value=preset!==undefined?String(preset):'custom';
+    $('#speed-duration').textContent=seconds.toFixed(1)+' 秒';
+    syncedSpeedDuration=speedView.duration;
+  }
   $('#speed-follow').checked=following;
   $('#speed-chart').dataset.browsing=following?'following':'manual';
   $('#speed-chart').dataset.fullRace=String(speedView.duration==='all');
